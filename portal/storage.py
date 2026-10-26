@@ -8,6 +8,8 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 
+from .arrivals import default_arrivals
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -30,6 +32,11 @@ class Store:
         for clip in self._state.get("clips", {}).values():
             clip.setdefault("fade_in", 0)
             clip.setdefault("fade_out", 0)
+        arrivals = self._state.setdefault("arrivals", default_arrivals())
+        for key, value in default_arrivals().items():
+            arrivals.setdefault(key, value)
+        for key, value in default_arrivals()["directory"].items():
+            arrivals["directory"].setdefault(key, value)
         self._credentials = self._read("credentials.json", {})
         key_path = self.root / "session.key"
         if key_path.exists():

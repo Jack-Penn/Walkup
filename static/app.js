@@ -13,6 +13,8 @@ let output = 'browser';
 let initialized = false;
 let browserTrack = null;
 let browserClip = null;
+let browserPreviewId = null;
+const previewPageId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let playTicket = 0;
 let playPending = false;
 let clipSaveTimer = null;
@@ -27,6 +29,10 @@ let lastLibrarySignature = '';
 let lastEventsSignature = '';
 let dragging = null;
 const waveforms = new Map();
+const arrivalUI = new ArrivalsUI({api, applyState, toast, icon, escapeHtml,
+  getState: () => state, getTrack: selectedTrack, getClip: currentClip,
+  getBusy: () => uploading || !!selectionPending || playPending,
+  loadClip: loadArrivalClip, stopPlayback: () => stopPlayback(true), saveClip});
 
 function formatTime(seconds) {
   const number = Math.max(0, Number(seconds) || 0);
@@ -124,6 +130,7 @@ function applyState(next) {
   renderConnection();
   renderEvents();
   renderSettings();
+  arrivalUI.render();
   if (state.playback.error && state.playback.error !== lastPlaybackError) toast(state.playback.error, true);
   lastPlaybackError = state.playback.error;
 }
@@ -179,6 +186,7 @@ function renderPlayer() {
   renderWaveform();
   renderTransport();
   if (track && !track.peaks) ensureWaveform(track);
+  arrivalUI.renderSelection();
 }
 
 function renderWaveform() {
@@ -242,7 +250,9 @@ function renderTransport() {
   $('stop-button').disabled = !playing;
   $('player').classList.toggle('is-playing', playing);
   $('playing-status').classList.toggle('is-playing', playing);
-  $('playing-status').innerHTML = `<span class="ready-dot"></span>${playing ? (isBrowserPlaying() ? 'Playing in this browser' : 'Playing on the speaker') : 'Ready when you are'}<span id="playback-time"></span>`;
+  const welcome = state?.arrivals?.runtime.active;
+  const status = playing ? (isBrowserPlaying() ? 'Playing in this browser' : welcome ? `Welcoming ${welcome.name} on the speaker` : 'Playing on the speaker') : 'Ready when you are';
+  $('playing-status').innerHTML = `<span class="ready-dot"></span>${escapeHtml(status)}<span id="playback-time"></span>`;
   if (!playing) $('wave-playhead').hidden = true;
 }
 
@@ -274,12 +284,12 @@ function renderEvents(force = false) {
   const signature = JSON.stringify(events.map((event) => [event.id, relativeTime(event.at)]));
   if (!force && signature === lastEventsSignature) return;
   lastEventsSignature = signature;
-  const icons = {play: 'play', upload: 'music', connection: 'pin', stop: 'stop', error: 'info', system: 'spark', delete: 'trash', complete: 'check'};
+  const icons = {arrival: 'home', arrival_play: 'users', play: 'play', upload: 'music', connection: 'pin', stop: 'stop', error: 'info', system: 'spark', delete: 'trash', complete: 'check'};
   $('event-list').innerHTML = events.length ? events.map((event) => `<div class="event-item"><span class="event-icon ${escapeHtml(event.kind)}">${icon(icons[event.kind] || 'activity')}</span><div class="event-text"><strong>${escapeHtml(event.title)}</strong>${event.detail ? `<p title="${escapeHtml(event.detail)}">${escapeHtml(event.detail)}</p>` : ''}</div><time datetime="${event.at}">${relativeTime(event.at)}</time></div>`).join('') : '<div class="empty-state">A quiet start. Your next action will appear here.</div>';
 }
 function renderSettings() {
   const system = state.system;
-  const rows = [['Device', system.hostname], ['Portal version', system.version], ['Portal password', system.auth_enabled ? 'Enabled' : 'Not set · audio preview only'], ['Speaker player', system.server_available ? 'ffplay installed' : 'Install ffmpeg on the Pi'], ['Audio processing', system.ffmpeg_available ? 'ffmpeg installed' : 'Basic metadata + browser waveform'], ['Upload limit', `${system.max_upload_mb} MB per file`], ['Arrival detection', 'Not enabled · manual playback']];
+  const rows = [['Device', system.hostname], ['Portal version', system.version], ['Portal password', system.auth_enabled ? 'Enabled' : 'Not set · audio preview only'], ['Speaker player', system.server_available ? 'ffplay installed' : 'Install ffmpeg on the Pi'], ['Audio processing', system.ffmpeg_available ? 'ffmpeg installed' : 'Basic metadata + browser waveform'], ['Upload limit', `${system.max_upload_mb} MB per file`], ['Arrival detection', state.arrivals?.enabled ? 'Life360 proximity · Pi speaker' : 'Off · manual playback available']];
   $('settings-list').innerHTML = rows.map(([label, value]) => `<div class="settings-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
   $('logout-button').hidden = !system.auth_enabled;
 }
@@ -291,6 +301,22 @@ async function selectTrack(id) {
     await stopPlayback(true);
     const result = await api('/api/selection', {track_id: id});
     applyState(result.state);
+  })();
+  renderPlayer();
+  try { await selectionPending; }
+  catch (error) { toast(error.message, true); }
+  finally { selectionPending = null; renderPlayer(); }
+}
+
+async function loadArrivalClip(clip) {
+  if (!state || uploading || selectionPending) return;
+  selectionPending = (async () => {
+    await saveClip();
+    await stopPlayback(true);
+    const result = await api('/api/selection', {track_id: clip.track_id, start: clip.start,
+      duration: clip.duration, fade_in: clip.fade_in, fade_out: clip.fade_out});
+    applyState(result.state);
+    $('player').scrollIntoView({behavior: 'smooth', block: 'start'});
   })();
   renderPlayer();
   try { await selectionPending; }
@@ -351,11 +377,13 @@ async function playClip() {
   const draft = clipDrafts.get(track.id);
   const savedClips = clipSaveQueue;
   let request = null;
+  let previewId = null;
   const ticket = ++playTicket;
   playPending = true;
   renderTransport();
   try {
     if (output === 'browser') {
+      previewId = browserPreviewId = `${previewPageId}-${ticket}`;
       browserTrack = track.id;
       browserClip = {...clip};
       if (!audio.src.endsWith(track.url)) audio.src = track.url;
@@ -368,7 +396,7 @@ async function playClip() {
     }
     await savedClips;
     if (ticket !== playTicket) return;
-    request = pendingPlayRequest = api('/api/play', {track_id: track.id, ...clip, output});
+    request = pendingPlayRequest = api('/api/play', {track_id: track.id, ...clip, output, preview_id: previewId});
     const result = await request;
     if (ticket !== playTicket) return;
     if (clipDrafts.get(track.id) === draft) clipDrafts.delete(track.id);
@@ -376,6 +404,7 @@ async function playClip() {
   } catch (error) {
     if (ticket === playTicket) {
       audio.pause(); browserEnvelope.stop(); browserTrack = null; browserClip = null;
+      releaseBrowserPreview(previewId); browserPreviewId = null;
       toast(error.name === 'NotAllowedError' ? 'Your browser blocked audio. Click Play clip again to allow it.' : error.message, true);
     }
   } finally {
@@ -386,13 +415,13 @@ async function playClip() {
 async function stopPlayback(silent = false) {
   const wasPlaying = isPlaying();
   playTicket++;
-  audio.pause(); browserEnvelope.stop(); browserTrack = null; browserClip = null;
+  audio.pause(); browserEnvelope.stop(); browserTrack = null; browserClip = null; browserPreviewId = null;
   try {
     if (pendingPlayRequest) {
       try { const result = await pendingPlayRequest; applyState(result.state); } catch { /* The play handler reports errors. */ }
     }
     playPending = false;
-    if (state?.playback.playing || (wasPlaying && output === 'server')) {
+    if (state?.playback.playing || wasPlaying || state?.arrivals?.runtime.queue_count || state?.arrivals?.runtime.manual_active) {
       const result = await api('/api/stop', {});
       applyState(result.state);
     }
@@ -427,9 +456,20 @@ function tickPlayback() {
   requestAnimationFrame(tickPlayback);
 }
 
-for (const event of ['ended', 'clipended']) audio.addEventListener(event, () => { browserTrack = null; browserClip = null; renderTransport(); });
+function releaseBrowserPreview(previewId) {
+  if (previewId) api('/api/arrivals/manual-ended', {preview_id: previewId}).then((result) => applyState(result.state)).catch(() => {});
+}
+for (const event of ['ended', 'clipended']) audio.addEventListener(event, () => {
+  const previewId = browserPreviewId;
+  browserTrack = null; browserClip = null; browserPreviewId = null; renderTransport();
+  releaseBrowserPreview(previewId);
+});
 audio.addEventListener('error', () => {
-  if (browserTrack) { browserEnvelope.stop(); toast('This browser could not decode the audio. Try WAV or MP3, or use Server speaker.', true); browserTrack = null; browserClip = null; renderTransport(); }
+  if (browserTrack) {
+    browserEnvelope.stop(); releaseBrowserPreview(browserPreviewId); browserPreviewId = null;
+    toast('This browser could not decode the audio. Try WAV or MP3, or use Server speaker.', true);
+    browserTrack = null; browserClip = null; renderTransport();
+  }
 });
 
 function uploadFile(file) {
@@ -634,7 +674,7 @@ $('test-connection').onclick = async () => {
   finally { $('test-connection').disabled = false; }
 };
 $('forget-token').onclick = async () => {
-  if (!await confirmAction('Disconnect Life360?', 'This removes the saved token from this device. It does not revoke the token at Life360.', 'Disconnect')) return;
+  if (!await confirmAction('Disconnect Life360?', 'This removes the saved token, synced people, home place, and arrival assignments from this device. Your uploaded audio stays. It does not revoke the token at Life360.', 'Disconnect')) return;
   try { const result = await api('/api/life360/token', undefined, 'DELETE'); applyState(result.state); toast(result.message); }
   catch (error) { toast(error.message, true); }
 };
@@ -651,4 +691,5 @@ updateClock(); setInterval(updateClock, 10000);
 refreshState(false);
 setInterval(() => refreshState(), 15000);
 setInterval(() => { if (state?.playback.playing) refreshState(); }, 900);
+setInterval(() => { if (!state?.playback.playing && (state?.arrivals?.enabled || state?.arrivals?.runtime.syncing || state?.arrivals?.runtime.sync_pending)) refreshState(); }, 1500);
 requestAnimationFrame(tickPlayback);

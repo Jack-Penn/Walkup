@@ -5,8 +5,7 @@ Start with: PORTAL_PASSWORD='choose-a-password' python3 app.py
 One process owns audio playback; do not deploy multiple worker processes.
 """
 import atexit
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
+from datetime import timedelta
 import hmac
 import ipaddress
 import math
@@ -25,12 +24,13 @@ from werkzeug.utils import secure_filename
 
 from portal.audio import ALLOWED_EXTENSIONS, Player, generate_demo, inspect_audio
 from portal.clips import default_clip, clip_values as validate_clip
-from portal.life360 import Life360Error, normalize_token, validate_token
+from portal.life360 import Life360Client, Life360Error, normalize_token, validate_token, retry_after_seconds
+from portal.arrivals import ArrivalEngine, arrival_clip
 from portal.storage import Store, now_iso
 
 ROOT = Path(__file__).resolve().parent
 MAX_UPLOAD_MB = 50
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 
 def create_app(test_config=None):
@@ -56,14 +56,21 @@ def create_app(test_config=None):
     def signed_in():
         return session.get("authenticated") and session.get("auth_version") == auth_version
 
-    if store.token() and not password and not app.testing:
-        raise RuntimeError("Set PORTAL_PASSWORD before starting a portal with saved Life360 credentials.")
+    cached_arrivals = store.snapshot()["arrivals"]
+    private_life360_data = bool(store.token() or cached_arrivals["directory"]["people"] or
+        cached_arrivals["directory"]["places"] or cached_arrivals["home"] or cached_arrivals["assignments"])
+    if private_life360_data and not password and not app.testing:
+        raise RuntimeError("Set PORTAL_PASSWORD before starting a portal with saved Life360 credentials or arrival data.")
     player = Player(store.event)
     atexit.register(lambda: player.stop(log=False))
     app.extensions.update(store=store, player=player)
     started = time.monotonic()
     check_lock = threading.Lock()
     next_check = [0.0]
+    arrivals = ArrivalEngine(store, player, auth_enabled=bool(password), network_lock=check_lock,
+        not_before=next_check, client_factory=app.config.get("LIFE360_CLIENT_FACTORY", Life360Client))
+    app.extensions["arrivals"] = arrivals
+    atexit.register(arrivals.stop)
     login_attempts = {}
     public_csrf = secrets.token_urlsafe(32)
 
@@ -159,7 +166,7 @@ def create_app(test_config=None):
             "tracks": [public_track(track) for track in state["tracks"]],
             "selected_id": state["selected_id"], "clips": state["clips"], "volume": state["volume"],
             "revision": state.get("revision", 0),
-            "life360": connection, "events": state["events"][:12],
+            "life360": connection, "arrivals": arrivals.public_state(state), "events": state["events"][:12],
             "playback": player.state(),
             "system": player.capabilities() | {"hostname": socket.gethostname(),
                 "auth_enabled": bool(password), "max_upload_mb": MAX_UPLOAD_MB,
@@ -257,20 +264,22 @@ def create_app(test_config=None):
 
     @app.delete("/api/audio/<track_id>")
     def delete_audio(track_id):
-        track = store.track(track_id)
-        if not track:
-            return fail("Audio not found.", 404)
-        if player.state()["track_id"] == track_id:
-            player.stop(log=False)
-        def remove(state):
-            state["tracks"] = [item for item in state["tracks"] if item["id"] != track_id]
-            state["clips"].pop(track_id, None)
-            if state["selected_id"] == track_id:
-                state["selected_id"] = state["tracks"][0]["id"] if state["tracks"] else None
-        store.mutate(remove)
-        store.track_path(track).unlink(missing_ok=True)
+        with arrivals.audio_lock:
+            track = store.track(track_id)
+            if not track:
+                return fail("Audio not found.", 404)
+            arrivals.remove_track(track_id)
+            if player.state()["track_id"] == track_id:
+                player.stop(log=False)
+            def remove(state):
+                state["tracks"] = [item for item in state["tracks"] if item["id"] != track_id]
+                state["clips"].pop(track_id, None)
+                if state["selected_id"] == track_id:
+                    state["selected_id"] = state["tracks"][0]["id"] if state["tracks"] else None
+            store.mutate(remove)
+            store.track_path(track).unlink(missing_ok=True)
         store.event("delete", "Audio removed", track["title"])
-        return success("Audio removed from this device.")
+        return success("Audio removed from this device and its arrival assignments.")
 
     def clip_values(data, track):
         existing = store.snapshot()["clips"].get(track["id"])
@@ -316,15 +325,20 @@ def create_app(test_config=None):
         output = data.get("output", "server")
         if output not in {"server", "browser"}:
             return fail("Choose the server speaker or this browser.")
+        preview_id = data.get("preview_id")
+        if preview_id is not None and (not isinstance(preview_id, str) or len(preview_id) > 128):
+            return fail("Invalid browser preview identifier.")
         try:
             clip = clip_values(data, track)
             volume = store.snapshot()["volume"]
-            if output == "server":
-                player.play(store.track_path(track), track, clip["start"], clip["duration"], volume,
-                            fade_in=clip["fade_in"], fade_out=clip["fade_out"])
-            else:
-                player.stop(log=False)
-                store.event("play", "Playing in this browser", track["title"])
+            with arrivals.audio_lock:
+                arrivals.manual_override(output, clip["duration"], preview_id)
+                if output == "server":
+                    player.play(store.track_path(track), track, clip["start"], clip["duration"], volume,
+                                fade_in=clip["fade_in"], fade_out=clip["fade_out"])
+                else:
+                    player.stop(log=False)
+                    store.event("play", "Playing in this browser", track["title"])
         except ValueError as error:
             return fail(str(error))
         def update(state):
@@ -335,8 +349,79 @@ def create_app(test_config=None):
 
     @app.post("/api/stop")
     def stop():
-        player.stop()
-        return success("Playback stopped.")
+        with arrivals.audio_lock:
+            arrivals.manual_override()
+            player.stop()
+        return success("Playback stopped; queued welcomes cleared.")
+
+    @app.post("/api/arrivals/manual-ended")
+    def manual_ended():
+        data = request.get_json(silent=True) or {}
+        arrivals.release_manual_preview(data.get("preview_id"))
+        return success()
+
+    def arrival_access():
+        if not password:
+            return fail("Protect the portal with a password before setting up Life360 arrivals.", 403, code="password_required")
+        if not store.token():
+            return fail("Connect Life360 before syncing or assigning welcome clips.", 403)
+        return None
+
+    @app.post("/api/arrivals/sync")
+    def sync_arrivals():
+        denied = arrival_access()
+        if denied:
+            return denied
+        if store.snapshot()["life360"]["status"] == "reauth_required":
+            return fail("Replace the rejected Life360 token before syncing your Circles.")
+        arrivals.request_sync()
+        return success("Syncing people and saved places from all your accessible Circles."), 202
+
+    @app.post("/api/arrivals/settings")
+    def arrival_settings():
+        if not password:
+            return fail("Protect the portal with a password before setting up Life360 arrivals.", 403, code="password_required")
+        try:
+            arrivals.configure(request.get_json(silent=True) or {})
+        except ValueError as error:
+            return fail(str(error))
+        return success("Arrival settings saved. Only new proximity arrivals will play.")
+
+    @app.route("/api/arrivals/assignments/<member_id>", methods=["POST", "DELETE"])
+    def assign_arrival(member_id):
+        denied = arrival_access()
+        if denied:
+            return denied
+        try:
+            if request.method == "DELETE":
+                arrivals.unassign(member_id)
+                return success("Welcome clip removed. The original audio is still in your library.")
+            clip = arrivals.assign(member_id, request.get_json(silent=True) or {})
+        except ValueError as error:
+            return fail(str(error))
+        return success("Welcome clip assigned. It is saved separately from manual playback.", assignment=clip)
+
+    @app.post("/api/arrivals/assignments/<member_id>/test")
+    def test_arrival(member_id):
+        denied = arrival_access()
+        if denied:
+            return denied
+        state = store.snapshot()
+        person = next((person for person in state["arrivals"]["directory"]["people"] if person["id"] == member_id), None)
+        assigned = state["arrivals"]["assignments"].get(member_id)
+        track = store.track(assigned.get("track_id")) if assigned else None
+        if not person or not track:
+            return fail("Assign a welcome clip to this person first.", 404)
+        try:
+            clip = arrival_clip(track, assigned)
+            with arrivals.audio_lock:
+                arrivals.manual_override()
+                player.play(store.track_path(track), track, clip["start"], clip["duration"], state["volume"],
+                            fade_in=clip["fade_in"], fade_out=clip["fade_out"])
+        except ValueError as error:
+            return fail(str(error))
+        store.event("play", f"Testing a welcome for {person['name']}", track["title"])
+        return success("Testing the assigned clip on the Pi speaker. This does not simulate an arrival.")
 
     def perform_check(token, replacing=False):
         if not password:
@@ -351,9 +436,14 @@ def create_app(test_config=None):
             profile = validate_token(token)
             checked = now_iso()
             if replacing:
-                store.set_token(token)
+                previous_id = store.snapshot()["life360"].get("account_id")
+                different_account = bool(previous_id and profile.get("account_id") and previous_id != profile["account_id"])
+                with arrivals.audio_lock, arrivals.lock:
+                    store.set_token(token)
+                    arrivals.reset_for_token(different_account)
             def update(state):
-                state["life360"].update(status="connected", account_name=profile["account_name"], checked_at=checked, message=None)
+                state["life360"].update(status="connected", account_name=profile["account_name"],
+                    account_id=profile.get("account_id"), checked_at=checked, message=None)
                 if replacing:
                     state["life360"]["saved_at"] = checked
             store.mutate(update)
@@ -361,19 +451,7 @@ def create_app(test_config=None):
             return success("Token verified and saved." if replacing else "Your Life360 connection is working.")
         except Life360Error as error:
             if error.status == "rate_limited":
-                try:
-                    delay = float(error.retry_after or 60)
-                except (ValueError, TypeError):
-                    try:
-                        retry_at = parsedate_to_datetime(error.retry_after)
-                        if retry_at.tzinfo is None:
-                            retry_at = retry_at.replace(tzinfo=timezone.utc)
-                        delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
-                    except (ValueError, TypeError, OverflowError):
-                        delay = 60
-                if not math.isfinite(delay):
-                    delay = 60
-                next_check[0] = time.monotonic() + max(60, delay)
+                next_check[0] = time.monotonic() + retry_after_seconds(error.retry_after)
             elif error.status == "blocked":
                 next_check[0] = time.monotonic() + 60
             if not replacing:
@@ -402,11 +480,13 @@ def create_app(test_config=None):
 
     @app.delete("/api/life360/token")
     def forget_token():
-        store.set_token("")
-        def update(state):
-            state["life360"] = {"status": "disconnected", "account_name": None,
-                "checked_at": None, "saved_at": None, "message": None}
-        store.mutate(update)
+        with arrivals.audio_lock, arrivals.lock:
+            store.set_token("")
+            arrivals.disconnect()
+            def update(state):
+                state["life360"] = {"status": "disconnected", "account_name": None,
+                    "checked_at": None, "saved_at": None, "message": None}
+            store.mutate(update)
         store.event("connection", "Life360 disconnected", "The token was removed from this device, not revoked at Life360.")
         return success("Saved token removed from this device.")
 
@@ -421,6 +501,8 @@ def create_app(test_config=None):
         app.logger.exception("Portal request failed")
         return fail("Something went wrong on the server. Check its terminal and try again.", 500)
 
+    if not app.testing and app.config.get("ARRIVALS_WORKER", True):
+        arrivals.start()
     return app
 
 
