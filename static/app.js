@@ -5,6 +5,9 @@ const icon = (name, cls = '') => `<svg class="icon ${cls}" aria-hidden="true"><u
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const csrf = document.querySelector('meta[name="portal-csrf"]').content;
 const audio = $('browser-audio');
+const browserEnvelope = new BrowserEnvelope(audio);
+const clipFields = ['clip-start', 'clip-duration', 'fade-in', 'fade-out'];
+const clipDrafts = new Map();
 let state = null;
 let output = 'browser';
 let initialized = false;
@@ -13,6 +16,10 @@ let browserClip = null;
 let playTicket = 0;
 let playPending = false;
 let clipSaveTimer = null;
+let clipSaveQueue = Promise.resolve();
+let selectionPending = null;
+let pendingPlayRequest = null;
+let uploading = false;
 let volumeSaveTimer = null;
 let lastServerPoll = performance.now();
 let lastPlaybackError = null;
@@ -39,7 +46,7 @@ function relativeTime(value) {
 function selectedTrack() { return state?.tracks.find((track) => track.id === state.selected_id) || null; }
 function currentClip() {
   const track = selectedTrack();
-  return track ? (state.clips[track.id] || {start: 0, duration: Math.min(12, track.duration)}) : {start: 0, duration: 0};
+  return {start: 0, duration: track ? Math.min(12, track.duration) : 0, fade_in: 0, fade_out: 0, ...(track ? state.clips[track.id] : {})};
 }
 function getOutputPreference() { try { return localStorage.getItem('threshold-output'); } catch { return null; } }
 function toast(message, error = false) {
@@ -81,10 +88,15 @@ async function refreshState(quiet = true) {
 }
 
 function applyState(next) {
-  const preserveClip = state && (clipSaveTimer || dragging || ['clip-start', 'clip-duration'].includes(document.activeElement?.id));
+  if (state && Number(next.revision || 0) < Number(state.revision || 0)) return false;
+  const preserveClip = state && (clipDrafts.has(state.selected_id) || dragging || clipFields.includes(document.activeElement?.id));
   const oldClip = preserveClip ? {...currentClip()} : null;
   const oldSelected = state?.selected_id;
   state = next;
+  for (const [id, draft] of clipDrafts) {
+    if (state.tracks.some((track) => track.id === id)) state.clips[id] = {...draft};
+    else clipDrafts.delete(id);
+  }
   if (oldClip && oldSelected === state.selected_id) state.clips[oldSelected] = oldClip;
   lastServerPoll = performance.now();
   if (!initialized) {
@@ -105,7 +117,7 @@ function applyState(next) {
   $('output-select').value = output;
   if (document.activeElement !== $('volume')) $('volume').value = state.volume;
   $('volume-value').textContent = `${state.volume}%`;
-  audio.volume = state.volume / 100;
+  browserEnvelope.setVolume(state.volume / 100);
   renderOutput();
   renderLibrary();
   renderPlayer();
@@ -147,6 +159,7 @@ function renderLibrary(force = false) {
 }
 
 function renderPlayer() {
+  if (!state) return;
   const track = selectedTrack();
   const clip = currentClip();
   $('selected-title').textContent = track ? track.title : 'Choose your sound';
@@ -155,9 +168,12 @@ function renderPlayer() {
   $('source-duration').textContent = formatTime(track?.duration || 0);
   const index = state.tracks.findIndex((item) => item.id === track?.id) + 1;
   $('art-sequence').textContent = `${String(index).padStart(2, '0')} / ${String(state.tracks.length).padStart(2, '0')}`;
-  for (const id of ['clip-start', 'clip-duration', 'start-handle', 'end-handle']) $(id).disabled = !track;
-  if (document.activeElement !== $('clip-start')) $('clip-start').value = Number(clip.start.toFixed(1));
-  if (document.activeElement !== $('clip-duration')) $('clip-duration').value = Number(clip.duration.toFixed(1));
+  for (const id of [...clipFields, 'start-handle', 'end-handle']) $(id).disabled = !track || uploading || !!selectionPending;
+  for (const [id, key] of [['clip-start', 'start'], ['clip-duration', 'duration'], ['fade-in', 'fade_in'], ['fade-out', 'fade_out']]) {
+    if (document.activeElement !== $(id)) $(id).value = Number(clip[key].toFixed(3));
+  }
+  $('fade-in').max = Math.max(0, clip.duration - clip.fade_out);
+  $('fade-out').max = Math.max(0, clip.duration - clip.fade_in);
   $('clip-start').max = track ? Math.max(0, track.duration - .05) : 0;
   $('clip-duration').max = track ? track.duration - clip.start : 0;
   renderWaveform();
@@ -220,8 +236,8 @@ function isBrowserPlaying() { return !!browserTrack && !audio.paused; }
 function isPlaying() { return isBrowserPlaying() || !!state?.playback.playing; }
 function renderTransport() {
   const playing = isPlaying();
-  $('play-button').disabled = !selectedTrack() || playPending;
-  $('play-button-label').textContent = playPending ? 'One moment…' : playing ? 'Stop playback' : 'Play clip';
+  $('play-button').disabled = !selectedTrack() || playPending || uploading || !!selectionPending;
+  $('play-button-label').textContent = uploading ? 'Adding audio…' : playPending ? 'One moment…' : playing ? 'Stop playback' : 'Play clip';
   $('play-button').querySelector('svg').innerHTML = `<use href="#i-${playing ? 'stop' : 'play'}"></use>`;
   $('stop-button').disabled = !playing;
   $('player').classList.toggle('is-playing', playing);
@@ -269,45 +285,72 @@ function renderSettings() {
 }
 
 async function selectTrack(id) {
-  if (id === state?.selected_id) return;
-  clearTimeout(clipSaveTimer); clipSaveTimer = null;
-  try {
+  if (uploading || selectionPending || id === state?.selected_id) return;
+  selectionPending = (async () => {
+    await saveClip();
     await stopPlayback(true);
     const result = await api('/api/selection', {track_id: id});
     applyState(result.state);
-  } catch (error) { toast(error.message, true); }
+  })();
+  renderPlayer();
+  try { await selectionPending; }
+  catch (error) { toast(error.message, true); }
+  finally { selectionPending = null; renderPlayer(); }
 }
 
-function updateClip(start, duration, save = true) {
+function updateClip(start, duration, save = true, fadePatch = null) {
   const track = selectedTrack();
-  if (!track) return;
+  if (!track || uploading || selectionPending) return;
+  const previous = currentClip();
   const minimum = Math.min(.1, track.duration);
-  start = Math.max(0, Math.min(track.duration - minimum, Number(start) || 0));
-  duration = Math.max(minimum, Math.min(track.duration - start, Number(duration) || minimum));
-  state.clips[track.id] = {start: Math.round(start * 1000) / 1000, duration: Math.round(duration * 1000) / 1000};
+  const round = (number) => Math.round(number * 1000) / 1000;
+  start = round(Math.max(0, Math.min(track.duration - minimum, Number(start) || 0)));
+  duration = round(Math.max(minimum, Math.min(track.duration - start, Number(duration) || minimum)));
+  let fadeIn = Math.max(0, Number(fadePatch?.fade_in ?? previous.fade_in) || 0);
+  let fadeOut = Math.max(0, Number(fadePatch?.fade_out ?? previous.fade_out) || 0);
+  if (fadePatch?.fade_in !== undefined) fadeIn = Math.min(fadeIn, Math.max(0, duration - fadeOut));
+  else if (fadePatch?.fade_out !== undefined) fadeOut = Math.min(fadeOut, Math.max(0, duration - fadeIn));
+  else if (fadeIn + fadeOut > duration) {
+    // Shortening a clip keeps both fades, scaled to fit.
+    fadeIn = round(fadeIn * duration / (fadeIn + fadeOut));
+    fadeOut = duration - fadeIn;
+  }
+  const clip = {start, duration, fade_in: round(fadeIn), fade_out: round(fadeOut)};
+  state.clips[track.id] = clip;
+  clipDrafts.set(track.id, clip);
   renderPlayer();
   if (save) {
     clearTimeout(clipSaveTimer);
     clipSaveTimer = setTimeout(saveClip, 450);
   }
 }
-async function saveClip() {
-  clipSaveTimer = null;
+function saveClip() {
+  clearTimeout(clipSaveTimer); clipSaveTimer = null;
   const track = selectedTrack();
-  if (!track) return;
-  try {
-    const result = await api('/api/selection', {track_id: track.id, ...currentClip()});
-    applyState(result.state);
-  } catch (error) { toast(error.message, true); }
+  const draft = track && clipDrafts.get(track.id);
+  if (!draft) return clipSaveQueue;
+  // Serialize autosaves; a delayed save must never change the selected track.
+  clipSaveQueue = clipSaveQueue.catch(() => {}).then(async () => {
+    if (clipDrafts.get(track.id) !== draft) return;
+    try {
+      const result = await api('/api/selection', {track_id: track.id, ...draft, select: false});
+      if (clipDrafts.get(track.id) === draft) clipDrafts.delete(track.id);
+      applyState(result.state);
+    } catch (error) { toast(error.message, true); }
+  });
+  return clipSaveQueue;
 }
 
 async function playClip() {
-  if (playPending) return;
+  if (playPending || uploading || selectionPending) return;
   if (isPlaying()) return stopPlayback();
   const track = selectedTrack();
   if (!track) return toast('Choose an audio file first.', true);
   clearTimeout(clipSaveTimer); clipSaveTimer = null;
   const clip = {...currentClip()};
+  const draft = clipDrafts.get(track.id);
+  const savedClips = clipSaveQueue;
+  let request = null;
   const ticket = ++playTicket;
   playPending = true;
   renderTransport();
@@ -316,29 +359,39 @@ async function playClip() {
       browserTrack = track.id;
       browserClip = {...clip};
       if (!audio.src.endsWith(track.url)) audio.src = track.url;
-      audio.volume = state.volume / 100;
+      const envelopeReady = browserEnvelope.prepare(clip, state.volume / 100);
       audio.onloadedmetadata = () => { if (browserTrack === track.id && ticket === playTicket) audio.currentTime = clip.start; };
       try { audio.currentTime = clip.start; } catch { /* The metadata handler completes the seek. */ }
-      await audio.play();
+      await Promise.all([envelopeReady, audio.play()]);
       if (ticket !== playTicket) return;
       renderTransport();
     }
-    const result = await api('/api/play', {track_id: track.id, ...clip, output});
+    await savedClips;
     if (ticket !== playTicket) return;
+    request = pendingPlayRequest = api('/api/play', {track_id: track.id, ...clip, output});
+    const result = await request;
+    if (ticket !== playTicket) return;
+    if (clipDrafts.get(track.id) === draft) clipDrafts.delete(track.id);
     applyState(result.state);
   } catch (error) {
-    audio.pause(); browserTrack = null; browserClip = null;
-    toast(error.name === 'NotAllowedError' ? 'Your browser blocked audio. Click Play clip again to allow it.' : error.message, true);
+    if (ticket === playTicket) {
+      audio.pause(); browserEnvelope.stop(); browserTrack = null; browserClip = null;
+      toast(error.name === 'NotAllowedError' ? 'Your browser blocked audio. Click Play clip again to allow it.' : error.message, true);
+    }
   } finally {
-    playPending = false;
-    renderTransport();
+    if (pendingPlayRequest === request) pendingPlayRequest = null;
+    if (ticket === playTicket) { playPending = false; renderTransport(); }
   }
 }
 async function stopPlayback(silent = false) {
   const wasPlaying = isPlaying();
   playTicket++;
-  audio.pause(); browserTrack = null; browserClip = null;
+  audio.pause(); browserEnvelope.stop(); browserTrack = null; browserClip = null;
   try {
+    if (pendingPlayRequest) {
+      try { const result = await pendingPlayRequest; applyState(result.state); } catch { /* The play handler reports errors. */ }
+    }
+    playPending = false;
     if (state?.playback.playing || (wasPlaying && output === 'server')) {
       const result = await api('/api/stop', {});
       applyState(result.state);
@@ -352,8 +405,8 @@ function tickPlayback() {
   if (state) {
     let position = null, elapsed = 0, duration = 0, playingId = null;
     if (isBrowserPlaying() && browserClip) {
-      if (audio.currentTime >= browserClip.start + browserClip.duration - .015) {
-        audio.pause(); browserTrack = null; browserClip = null; renderTransport();
+      if (audio.currentTime >= browserClip.start + browserClip.duration) {
+        browserEnvelope.finish();
       } else {
         position = audio.currentTime; elapsed = Math.max(0, position - browserClip.start);
         duration = browserClip.duration; playingId = browserTrack;
@@ -374,9 +427,9 @@ function tickPlayback() {
   requestAnimationFrame(tickPlayback);
 }
 
-audio.addEventListener('ended', () => { browserTrack = null; browserClip = null; renderTransport(); });
+for (const event of ['ended', 'clipended']) audio.addEventListener(event, () => { browserTrack = null; browserClip = null; renderTransport(); });
 audio.addEventListener('error', () => {
-  if (browserTrack) { toast('This browser could not decode the audio. Try WAV or MP3, or use Server speaker.', true); browserTrack = null; browserClip = null; renderTransport(); }
+  if (browserTrack) { browserEnvelope.stop(); toast('This browser could not decode the audio. Try WAV or MP3, or use Server speaker.', true); browserTrack = null; browserClip = null; renderTransport(); }
 });
 
 function uploadFile(file) {
@@ -404,25 +457,45 @@ function uploadFile(file) {
   });
 }
 async function uploadFiles(files) {
-  if (!files.length || $('dropzone').classList.contains('busy')) return;
+  if (!files.length || uploading) return;
+  uploading = true;
   $('dropzone').classList.add('busy'); $('upload-button').disabled = true;
+  $('dropzone').setAttribute('aria-busy', 'true');
   $('upload-progress').hidden = false;
+  renderPlayer();
   let uploaded = 0;
-  await stopPlayback(true);
-  for (const file of files) {
-    if (file.size > 50 * 1024 * 1024) { toast(`${file.name} is larger than 50 MB.`, true); continue; }
-    $('dropzone-title').textContent = file.name;
-    $('dropzone-description').textContent = 'Making room for a new sound…';
-    $('upload-progress-bar').style.width = '0%';
-    try { const result = await uploadFile(file); applyState(result.state); uploaded++; }
-    catch (error) { toast(error.message, true); }
+  try {
+    if (selectionPending) await selectionPending.catch(() => {});
+    await saveClip();
+    await stopPlayback(true);
+    for (const file of files) {
+      if (file.size > 50 * 1024 * 1024) { toast(`${file.name} is larger than 50 MB.`, true); continue; }
+      $('dropzone-title').textContent = file.name;
+      $('dropzone-description').textContent = 'Making room for a new sound…';
+      $('upload-progress-bar').style.width = '0%';
+      try {
+        const result = await uploadFile(file);
+        // An old search/sort must not hide the file that the server just selected.
+        $('track-search').value = '';
+        $('track-sort').value = 'recent';
+        applyState(result.state);
+        renderLibrary(true);
+        const row = $('track-list').querySelector('.track-row.selected');
+        row?.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        uploaded++;
+      } catch (error) { toast(error.message, true); }
+    }
+  } finally {
+    uploading = false;
+    $('dropzone').classList.remove('busy'); $('upload-button').disabled = false;
+    $('dropzone').removeAttribute('aria-busy');
+    $('upload-progress').hidden = true;
+    $('dropzone-title').textContent = 'Drop in your next entrance.';
+    $('dropzone-description').innerHTML = 'Drag a file here or <span>browse files</span>';
+    $('file-input').value = '';
+    renderPlayer();
   }
-  $('dropzone').classList.remove('busy'); $('upload-button').disabled = false;
-  $('upload-progress').hidden = true;
-  $('dropzone-title').textContent = 'Drop in your next entrance.';
-  $('dropzone-description').innerHTML = 'Drag a file here or <span>browse files</span>';
-  $('file-input').value = '';
-  if (uploaded) toast(`${uploaded === 1 ? 'Your new sound is' : `${uploaded} new sounds are`} ready to play.`);
+  if (uploaded) toast(uploaded === 1 ? 'Uploaded and selected. Your sound is ready to play.' : `${uploaded} sounds added. The last upload is selected.`);
 }
 
 function confirmAction(title, description, actionLabel = 'Remove') {
@@ -441,6 +514,7 @@ function confirmAction(title, description, actionLabel = 'Remove') {
 }
 
 $('track-list').addEventListener('click', async (event) => {
+  if (uploading || selectionPending) return;
   const remove = event.target.closest('[data-delete]');
   if (remove) {
     const track = state.tracks.find((item) => item.id === remove.dataset.delete);
@@ -464,8 +538,8 @@ $('track-list').addEventListener('keydown', (event) => {
 $('track-search').addEventListener('input', () => renderLibrary());
 $('track-sort').addEventListener('change', () => renderLibrary());
 $('upload-button').onclick = () => $('file-input').click();
-$('dropzone').onclick = () => $('file-input').click();
-$('dropzone').onkeydown = (event) => { if (['Enter', ' '].includes(event.key)) { event.preventDefault(); $('file-input').click(); } };
+$('dropzone').onclick = () => { if (!uploading) $('file-input').click(); };
+$('dropzone').onkeydown = (event) => { if (!uploading && ['Enter', ' '].includes(event.key)) { event.preventDefault(); $('file-input').click(); } };
 $('file-input').onchange = (event) => uploadFiles(Array.from(event.target.files));
 for (const type of ['dragenter', 'dragover']) $('dropzone').addEventListener(type, (event) => { event.preventDefault(); $('dropzone').classList.add('dragover'); });
 for (const type of ['dragleave', 'drop']) $('dropzone').addEventListener(type, (event) => { event.preventDefault(); $('dropzone').classList.remove('dragover'); });
@@ -474,12 +548,13 @@ window.addEventListener('dragover', (event) => event.preventDefault());
 window.addEventListener('drop', (event) => event.preventDefault());
 $('play-button').onclick = playClip;
 $('stop-button').onclick = () => stopPlayback();
-for (const id of ['clip-start', 'clip-duration']) {
+for (const id of clipFields) {
   $(id).addEventListener('input', () => {
-    if ($(id).value === '') return;
-    if (isPlaying()) stopPlayback(true);
+    if ($(id).value === '' || uploading || selectionPending) return;
+    if (isPlaying() || playPending) stopPlayback(true);
     const clip = currentClip();
-    updateClip(id === 'clip-start' ? $(id).value : clip.start, id === 'clip-duration' ? $(id).value : clip.duration);
+    const patch = id === 'fade-in' ? {fade_in: $(id).value} : id === 'fade-out' ? {fade_out: $(id).value} : null;
+    updateClip(id === 'clip-start' ? $(id).value : clip.start, id === 'clip-duration' ? $(id).value : clip.duration, true, patch);
   });
   $(id).addEventListener('blur', () => renderPlayer());
 }
@@ -491,7 +566,7 @@ $('output-select').onchange = async (event) => {
 };
 $('volume').addEventListener('input', (event) => {
   if (!state) return;
-  state.volume = Number(event.target.value); audio.volume = state.volume / 100;
+  state.volume = Number(event.target.value); browserEnvelope.setVolume(state.volume / 100);
   $('volume-value').textContent = `${state.volume}%`;
   clearTimeout(volumeSaveTimer);
   volumeSaveTimer = setTimeout(async () => {
@@ -501,9 +576,9 @@ $('volume').addEventListener('input', (event) => {
 });
 
 $('waveform-wrap').addEventListener('pointerdown', (event) => {
-  const track = selectedTrack(); if (!track) return;
+  const track = selectedTrack(); if (!track || uploading || selectionPending) return;
   event.preventDefault();
-  if (isPlaying()) stopPlayback(true);
+  if (isPlaying() || playPending) stopPlayback(true);
   const rect = $('waveform-wrap').getBoundingClientRect();
   const position = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * track.duration;
   const clip = currentClip();
@@ -525,7 +600,10 @@ $('waveform-wrap').addEventListener('pointercancel', finishDrag);
 for (const [id, which] of [['start-handle', 'start'], ['end-handle', 'end']]) {
   $(id).addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-    event.preventDefault(); const clip = currentClip(); const delta = event.key === 'ArrowLeft' ? -.1 : .1;
+    event.preventDefault();
+    if (uploading || selectionPending) return;
+    if (isPlaying() || playPending) stopPlayback(true);
+    const clip = currentClip(); const delta = event.key === 'ArrowLeft' ? -.1 : .1;
     if (which === 'start') updateClip(clip.start + delta, clip.duration - delta);
     else updateClip(clip.start, clip.duration + delta);
   });

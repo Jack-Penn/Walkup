@@ -11,6 +11,7 @@ import time
 import wave
 
 from mutagen import File as MutagenFile
+from .clips import fade_filter
 
 ALLOWED_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".opus"}
 MAX_DURATION = 30 * 60
@@ -147,7 +148,8 @@ class Player:
                 "duration": self.duration if playing else 0, "offset": self.offset if playing else 0,
                 "error": self.last_error}
 
-    def play(self, path, track, start, duration, volume):
+    def play(self, path, track, start, duration, volume, fade_in=0, fade_out=0):
+        filters = fade_filter(duration, fade_in, fade_out)
         executable = shutil.which("ffplay")
         if not executable:
             raise ValueError("Server playback needs ffplay. On the Pi, run: sudo apt install ffmpeg. You can use This browser in the meantime.")
@@ -157,7 +159,10 @@ class Player:
             generation = self.generation
             command = [executable, "-nodisp", "-autoexit", "-loglevel", "error", "-nostats",
                 "-protocol_whitelist", "file,pipe", "-ss", str(start), "-t", str(duration),
-                "-volume", str(round(volume)), str(path)]
+                "-volume", str(round(volume))]
+            if filters:
+                command.extend(["-af", filters])
+            command.append(str(path))
             try:
                 process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

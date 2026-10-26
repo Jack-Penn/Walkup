@@ -24,15 +24,18 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 
 from portal.audio import ALLOWED_EXTENSIONS, Player, generate_demo, inspect_audio
+from portal.clips import default_clip, clip_values as validate_clip
 from portal.life360 import Life360Error, normalize_token, validate_token
 from portal.storage import Store, now_iso
 
 ROOT = Path(__file__).resolve().parent
 MAX_UPLOAD_MB = 50
+APP_VERSION = "0.2.0"
 
 
 def create_app(test_config=None):
     app = Flask(__name__)
+    app.jinja_env.globals["asset_version"] = APP_VERSION
     app.config.update(
         DATA_DIR=os.environ.get("PORTAL_DATA_DIR", str(ROOT / "data")),
         PORTAL_PASSWORD=os.environ.get("PORTAL_PASSWORD", ""),
@@ -76,7 +79,7 @@ def create_app(test_config=None):
             def seed(state):
                 state["tracks"].append(track)
                 state["selected_id"] = identifier
-                state["clips"][identifier] = {"start": 0, "duration": min(12, duration)}
+                state["clips"][identifier] = default_clip(duration)
             store.mutate(seed)
             store.event("upload", "A soft landing, included", "An original demo chime to try things out.")
         store.mutate(lambda state: state.update(initialized=True))
@@ -155,11 +158,12 @@ def create_app(test_config=None):
         return {
             "tracks": [public_track(track) for track in state["tracks"]],
             "selected_id": state["selected_id"], "clips": state["clips"], "volume": state["volume"],
+            "revision": state.get("revision", 0),
             "life360": connection, "events": state["events"][:12],
             "playback": player.state(),
             "system": player.capabilities() | {"hostname": socket.gethostname(),
                 "auth_enabled": bool(password), "max_upload_mb": MAX_UPLOAD_MB,
-                "uptime_seconds": round(time.monotonic() - started), "version": "0.1.0"},
+                "uptime_seconds": round(time.monotonic() - started), "version": APP_VERSION},
         }
 
     def success(message=None, **extra):
@@ -234,10 +238,10 @@ def create_app(test_config=None):
         def add(state):
             state["tracks"].insert(0, track)
             state["selected_id"] = identifier
-            state["clips"][identifier] = {"start": 0, "duration": min(12, duration)}
+            state["clips"][identifier] = default_clip(duration)
         store.mutate(add)
         store.event("upload", "New sound, new possibilities", title)
-        return success("Audio added to your library.", track=public_track(track))
+        return success("Audio uploaded and selected.", track=public_track(track), selected_track_id=identifier)
 
     @app.get("/media/<track_id>")
     def media(track_id):
@@ -269,17 +273,8 @@ def create_app(test_config=None):
         return success("Audio removed from this device.")
 
     def clip_values(data, track):
-        existing = store.snapshot()["clips"].get(track["id"], {"start": 0, "duration": min(12, track["duration"])})
-        try:
-            start = float(data.get("start", existing["start"]))
-            duration = float(data.get("duration", existing["duration"]))
-            if not all(math.isfinite(number) for number in (start, duration)):
-                raise ValueError
-        except (TypeError, ValueError):
-            raise ValueError("Start time and duration must be valid numbers.") from None
-        if start < 0 or start >= track["duration"] or duration <= 0 or start + duration > track["duration"] + .025:
-            raise ValueError("Keep the selected clip within the audio file, with a duration greater than zero.")
-        return round(start, 3), round(min(duration, track["duration"] - start), 3)
+        existing = store.snapshot()["clips"].get(track["id"])
+        return validate_clip(data, track["duration"], existing)
 
     @app.post("/api/selection")
     def select():
@@ -287,13 +282,16 @@ def create_app(test_config=None):
         track = store.track(data.get("track_id"))
         if not track:
             return fail("Choose an audio file first.", 404)
+        if not isinstance(data.get("select", True), bool):
+            return fail("The select flag must be true or false.")
         try:
-            start, duration = clip_values(data, track)
+            clip = clip_values(data, track)
         except ValueError as error:
             return fail(str(error))
         def update(state):
-            state["selected_id"] = track["id"]
-            state["clips"][track["id"]] = {"start": start, "duration": duration}
+            if data.get("select", True):
+                state["selected_id"] = track["id"]
+            state["clips"][track["id"]] = clip
         store.mutate(update)
         return success()
 
@@ -319,10 +317,11 @@ def create_app(test_config=None):
         if output not in {"server", "browser"}:
             return fail("Choose the server speaker or this browser.")
         try:
-            start, duration = clip_values(data, track)
+            clip = clip_values(data, track)
             volume = store.snapshot()["volume"]
             if output == "server":
-                player.play(store.track_path(track), track, start, duration, volume)
+                player.play(store.track_path(track), track, clip["start"], clip["duration"], volume,
+                            fade_in=clip["fade_in"], fade_out=clip["fade_out"])
             else:
                 player.stop(log=False)
                 store.event("play", "Playing in this browser", track["title"])
@@ -330,9 +329,9 @@ def create_app(test_config=None):
             return fail(str(error))
         def update(state):
             state["selected_id"] = track["id"]
-            state["clips"][track["id"]] = {"start": start, "duration": duration}
+            state["clips"][track["id"]] = clip
         store.mutate(update)
-        return success(output=output, url=url_for("media", track_id=track["id"]), start=start, duration=duration)
+        return success(output=output, url=url_for("media", track_id=track["id"]), **clip)
 
     @app.post("/api/stop")
     def stop():

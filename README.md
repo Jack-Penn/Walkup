@@ -5,8 +5,9 @@ A small, self-hosted control room for your homecoming soundtrack. One Raspberry 
 ## What works
 
 - Upload MP3, WAV, OGG, M4A, FLAC, AAC, or OPUS audio (50 MB/file; 30 minutes maximum).
-- Search, sort, select, and delete audio files.
+- Search, sort, select, and delete audio files. **New uploads are automatically selected** in both the library and player; any hiding search is cleared.
 - Pick a clip's **start time and duration**, with a waveform and draggable selection handles.
+- Set optional **fade-in and fade-out** times for each track. Fades work in both browser previews and server-speaker playback.
 - Play/stop the clip through **the server's speaker** or **this browser**. Choose the output explicitly.
 - Set playback volume. Browser volume updates live; server volume is applied at the start of the next playback.
 - Replace your Life360 token and verify it before saving; test the saved token or remove it from this server.
@@ -44,6 +45,14 @@ python3 app.py
 ```
 
 For an **audio-only preview**, `python3 app.py` without `PORTAL_PASSWORD` works too. Token storage and connection tests are intentionally unavailable until you restart with a password. If credentials have already been saved, a password is required to start the server at all.
+
+## Choosing a clip and fades
+
+An upload immediately becomes the selected track, updates the player title and waveform, and receives a checkmark in the library. Search clears and sorting returns to Recently added so the new file is visible. Uploading multiple files selects the last successful upload; nothing auto-plays.
+
+Use **Start at** and **Play for** as before. The two small **Fade in / Fade out** fields are in seconds; **0 turns that fade off**. For example, Start at 20, Play for 12, Fade in 1, Fade out 2 starts at file position 20 seconds, fades up during the first second of the clip, and fades down during its final two seconds. The source file is not changed.
+
+Selections and fades auto-save separately for each track. Their combined length fits inside the selected clip; shortening a clip scales its existing fades to fit. Editing a playing clip stops playback—press Play clip again to hear the change. Existing tracks start with both fades off.
 
 ## Speaker playback
 
@@ -107,7 +116,17 @@ pip install pytest
 python3 -m pytest -q
 ```
 
-Tests use generated audio and mocked Life360 responses. They do not require your real token or contact your account.
+Tests use generated audio and mocked Life360 responses. They do not require your real token or contact your account. When ffmpeg/ffplay are installed, the suite also checks real fade-filter output and playback through SDL's silent dummy output, not a physical speaker.
+
+Optional real-browser regressions (uploads, stale polling responses, per-track persistence, actual Web Audio fade ramps, volume, and mobile layouts):
+
+```bash
+pip install playwright
+python3 -m playwright install --with-deps chromium
+THRESHOLD_BROWSER_TESTS=1 python3 -m pytest -q
+```
+
+Browser tests use their own temporary server and library, never your portal's `data/` directory. Playwright is only a test dependency, not needed to run Threshold.
 
 ## Project layout
 

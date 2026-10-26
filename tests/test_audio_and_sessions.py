@@ -61,7 +61,8 @@ def test_ffplay_zero_exit_with_audio_failure_is_not_reported_as_success():
 
 
 @pytest.mark.skipif(not shutil.which('ffplay'), reason='ffplay is optional on development computers')
-def test_real_ffplay_process_with_dummy_audio_output(tmp_path, monkeypatch):
+@pytest.mark.parametrize('fades', [(0, 0), (.1, .1)])
+def test_real_ffplay_process_with_dummy_audio_output(tmp_path, monkeypatch, fades):
     monkeypatch.setenv('SDL_AUDIODRIVER', 'dummy')
     path = tmp_path / 'short.wav'
     with wave.open(str(path), 'wb') as file:
@@ -77,7 +78,7 @@ def test_real_ffplay_process_with_dummy_audio_output(tmp_path, monkeypatch):
             finished.set()
     player = Player(record)
     try:
-        player.play(path, {'id': 'local-test', 'title': 'Local test'}, .2, .25, 50)
+        player.play(path, {'id': 'local-test', 'title': 'Local test'}, .2, .25, 50, fade_in=fades[0], fade_out=fades[1])
         assert finished.wait(timeout=8), 'ffplay did not finish'
         assert player.state()['error'] is None
         assert events[-1][0] == 'complete'

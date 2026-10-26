@@ -92,7 +92,7 @@ def test_upload_metadata_selection_and_range_download(client, application):
     assert len(response.data) == 11
     assert application.extensions["store"].track(track["id"])["stored_name"] != "My welcome.wav"
     response = browser.post("/api/selection", json={"track_id": track["id"], "start": 1.2, "duration": 2.3}, headers=headers)
-    assert response.json["state"]["clips"][track["id"]] == {"start": 1.2, "duration": 2.3}
+    assert response.json["state"]["clips"][track["id"]] == {"start": 1.2, "duration": 2.3, "fade_in": 0, "fade_out": 0}
 
 
 def test_upload_rejects_non_audio(client):

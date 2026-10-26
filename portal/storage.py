@@ -26,6 +26,10 @@ class Store:
                         "checked_at": None, "saved_at": None, "message": None},
             "events": [],
         })
+        self._state.setdefault("revision", 0)
+        for clip in self._state.get("clips", {}).values():
+            clip.setdefault("fade_in", 0)
+            clip.setdefault("fade_out", 0)
         self._credentials = self._read("credentials.json", {})
         key_path = self.root / "session.key"
         if key_path.exists():
@@ -65,6 +69,7 @@ class Store:
     def mutate(self, function):
         with self.lock:
             result = function(self._state)
+            self._state["revision"] = self._state.get("revision", 0) + 1
             self._write("state.json", self._state)
             return result
 
