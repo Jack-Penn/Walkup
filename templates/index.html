@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f6f2"><meta name="portal-csrf" content="{{ csrf_token }}">
+  <meta name="description" content="Your local control room for a better-sounding homecoming.">
+  <title>Threshold — Make an entrance</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+<svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13M9 8l12-2"/><ellipse cx="5.5" cy="18.5" rx="3.5" ry="2.5"/><ellipse cx="17.5" cy="16.5" rx="3.5" ry="2.5"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-.8 2.3-2.4 1L3.6 6l-1 1.8 1.4 1.8-.2 2.6-1.4 1.6 1 2.1 2.5.1 1.8 1.7.5 2.4h2.2l1.2-2 2.5-.5 2.2.8 1.6-1.6-.8-2.2.5-2.5 2-1.2V8.7l-2.4-.5L16 6.4 15.9 4l-2.1-1-1.6 1.4L9.6 4Z"/><circle cx="10.7" cy="10.7" r="3"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8Z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="13" rx="2"/><path d="m4 16-2 4h20l-2-4M9 20h6"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3m-4 4v3"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5.1 7a8 8 0 0 1 13-2l1.9 2M4 17l1.9 2a8 8 0 0 0 13-2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.1"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M16 6.5h2m-2 11h2"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 8.5a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3.5v.1"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 4H4v16h5m5-12 4 4-4 4M8 12h13"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8M5 9v12h14V9m-10 12v-7h6v7"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 2.8 7.2L22 12l-7.2 2.8L12 22l-2.8-7.2L2 12l7.2-2.8Z"/></symbol>
+</defs></svg>
+
+<aside class="sidebar">
+  <a class="brand" href="#overview" aria-label="Threshold home"><span class="brand-mark"><span></span></span>threshold<span class="brand-period">.</span></a>
+  <div class="space-label">YOUR SPACE</div>
+  <nav class="main-nav" aria-label="Main navigation">
+    <a href="#overview" class="nav-link active" data-section="overview"><svg class="icon"><use href="#i-grid"/></svg><span>Overview</span><span class="nav-dot"></span></a>
+    <a href="#library" class="nav-link" data-section="library"><svg class="icon"><use href="#i-music"/></svg><span>Audio library</span><span id="nav-track-count" class="nav-count">—</span></a>
+    <a href="#connection" class="nav-link" data-section="connection"><svg class="icon"><use href="#i-pin"/></svg><span>Life360</span></a>
+    <a href="#activity" class="nav-link" data-section="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span></a>
+  </nav>
+  <div class="sidebar-bottom">
+    <div class="little-note"><div class="note-icon"><svg class="icon"><use href="#i-home"/></svg></div><p>A warmer welcome.<br><span>One little sound at a time.</span></p><span class="note-spark">✳</span></div>
+    <button class="nav-link subtle" id="settings-button"><svg class="icon"><use href="#i-settings"/></svg><span>Server settings</span></button>
+    <button class="nav-link subtle" id="help-button"><svg class="icon"><use href="#i-help"/></svg><span>Quick start guide</span><svg class="icon small"><use href="#i-arrow"/></svg></button>
+    <div class="device-badge"><span class="status-dot"></span><span>Local control. All yours.</span></div>
+  </div>
+</aside>
+
+<div class="app-shell">
+  <header class="topbar"><div class="breadcrumb"><svg class="icon small"><use href="#i-home"/></svg><span>Your home</span><svg class="icon tiny"><use href="#i-chevron"/></svg><strong>Control room</strong></div><div class="topbar-right"><span class="server-connection" id="server-connection"><span class="status-dot"></span>Server online</span><span class="topbar-divider"></span><time id="local-clock">—</time><span class="avatar" aria-label="Home">H</span></div></header>
+  <main id="overview">
+    <section class="page-heading"><div><div class="eyebrow">SMALL MOMENTS. GOOD SOUNDS.</div><h1>Make an entrance<span>.</span></h1><p>Your homecoming, with a soundtrack of its own.</p></div><span class="mode-badge"><span class="mode-indicator"></span>Manual mode<svg class="icon small"><use href="#i-info"/></svg><span class="mode-tooltip">Choose a clip and play it on demand. Door-triggered automations are a future step.</span></span></section>
+
+    <section class="summary-grid" aria-label="Portal overview">
+      <button class="summary-card" id="connection-summary"><span class="summary-icon terracotta"><svg class="icon"><use href="#i-pin"/></svg></span><span class="summary-content"><span class="summary-label">LOCATION CONNECTION</span><strong id="connection-summary-title">Not connected</strong><span id="connection-summary-sub">Connect your Life360 account</span></span><svg class="icon small summary-arrow"><use href="#i-arrow"/></svg></button>
+      <a class="summary-card" href="#library"><span class="summary-icon sage"><svg class="icon"><use href="#i-music"/></svg></span><span class="summary-content"><span class="summary-label">YOUR SOUNDTRACK</span><strong id="library-summary-title">Loading your library…</strong><span id="library-summary-sub">A sound for every hello</span></span><svg class="icon small summary-arrow"><use href="#i-arrow"/></svg></a>
+      <button class="summary-card" id="output-summary"><span class="summary-icon sand"><svg class="icon"><use href="#i-speaker"/></svg></span><span class="summary-content"><span class="summary-label">PLAYBACK OUTPUT</span><strong id="output-summary-title">This browser</strong><span id="output-summary-sub">Ready for a little sound check</span></span><span class="small-live-dot"></span></button>
+    </section>
+
+    <div class="workspace-grid">
+      <div class="workspace-main">
+        <section class="card library-card" id="library">
+          <div class="card-header"><div><h2>Audio library <span class="count-pill" id="library-count">0</span></h2><p>The sounds that make it feel like home.</p></div><button class="button secondary compact" id="upload-button"><svg class="icon small"><use href="#i-plus"/></svg>Add audio</button></div>
+          <input type="file" id="file-input" accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,.opus,audio/*" multiple hidden>
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload audio files by clicking or dragging them here">
+            <span class="upload-symbol"><svg class="icon"><use href="#i-upload"/></svg></span><div class="dropzone-copy"><strong id="dropzone-title">Drop in your next entrance.</strong><p id="dropzone-description">Drag a file here or <span>browse files</span></p></div><span class="format-note">MP3, WAV & more<br>Up to 50 MB per file</span>
+            <div class="upload-progress" id="upload-progress" hidden><span id="upload-progress-bar"></span></div>
+          </div>
+          <div class="library-toolbar"><label class="search-field"><svg class="icon small"><use href="#i-search"/></svg><input type="search" id="track-search" placeholder="Find your sound…" aria-label="Search audio library"></label><label class="sort-field"><span class="sr-only">Sort tracks</span><select id="track-sort"><option value="recent">Recently added</option><option value="name">Name, A–Z</option><option value="duration">Shortest first</option></select></label></div>
+          <div class="track-columns"><span>TRACK</span><span>LENGTH</span><span></span></div>
+          <div id="track-list" class="track-list" aria-label="Audio files"><div class="empty-state"><span class="spinner"></span><p>Getting your sounds ready…</p></div></div>
+          <div class="library-footer"><span><svg class="icon tiny"><use href="#i-lock"/></svg>Your audio stays on this server.</span><span id="library-storage">—</span></div>
+        </section>
+
+        <section class="card connection-card" id="connection">
+          <div class="card-header"><div class="connection-heading"><span class="life360-mark"><svg class="icon"><use href="#i-pin"/></svg></span><div><h2>A little closer to home.</h2><p>Your Life360 connection</p></div></div><span class="connection-status" id="connection-status"><span></span>Not connected</span></div>
+          <div class="account-strip" id="account-strip" hidden><span class="account-avatar" id="account-avatar">?</span><div><strong id="account-name">Life360 account</strong><span id="account-check">Not tested yet</span></div><button class="text-button" id="test-connection"><svg class="icon small"><use href="#i-refresh"/></svg>Test connection</button></div>
+          <div class="security-notice" id="security-notice" hidden><svg class="icon small"><use href="#i-lock"/></svg><p>Before adding a token, protect your local portal with a password. <button class="inline-button" id="security-guide-button">See setup instructions</button></p></div>
+          <form id="token-form"><label class="field-label" for="token-input" id="token-label">LIFE360 ACCESS TOKEN</label><div class="token-row"><div class="token-field"><svg class="icon small"><use href="#i-lock"/></svg><input id="token-input" type="password" autocomplete="off" spellcheck="false" maxlength="16384" placeholder="Paste your access token" aria-describedby="token-note"><button type="button" class="icon-button" id="toggle-token" aria-label="Show token"><svg class="icon small"><use href="#i-eye"/></svg></button></div><button type="submit" class="button dark" id="save-token"><span>Save & test</span><svg class="icon small"><use href="#i-arrow"/></svg></button></div></form>
+          <div class="connection-footer"><p id="token-note"><svg class="icon tiny"><use href="#i-lock"/></svg>Stored only on this device. Never sent back to your browser.</p><button class="text-button danger quiet" id="forget-token" hidden>Remove token</button></div>
+          <p class="connection-explainer">Replacing a token is manual. This portal verifies it with Life360 before saving; it does not automatically sign in or renew tokens.</p>
+        </section>
+      </div>
+
+      <div class="workspace-side">
+        <section class="card player-card" id="player">
+          <div class="player-art" id="player-art"><span class="art-label"><span></span>THE WELCOME SOUND</span><div class="record-art" aria-hidden="true"><div class="record-ring ring-one"></div><div class="record-ring ring-two"></div><div class="record-ring ring-three"></div><div class="record-disc"><div class="record-center"></div></div><span class="art-sun"></span><span class="art-cross">✳</span></div><span class="art-bottom">a little more you.</span><span class="art-sequence" id="art-sequence">01 / 01</span></div>
+          <div class="player-body"><div class="selected-label">NOW SELECTED<span id="selected-demo" class="demo-badge">DEMO SOUND</span></div><h2 id="selected-title">Choose your sound</h2><p class="selected-meta" id="selected-meta">Select an audio file to get started</p>
+            <div class="waveform-wrap" id="waveform-wrap"><div class="wave-selection" id="wave-selection"></div><svg id="waveform" viewBox="0 0 640 100" preserveAspectRatio="none" role="img" aria-label="Audio waveform; orange bars show your selected clip"></svg><div class="wave-playhead" id="wave-playhead" hidden></div><button class="wave-handle start-handle" id="start-handle" aria-label="Drag clip start"><span></span></button><button class="wave-handle end-handle" id="end-handle" aria-label="Drag clip end"><span></span></button></div>
+            <div class="waveform-times"><span>0:00</span><span id="source-duration">0:00</span></div><p class="waveform-unavailable" id="waveform-unavailable" hidden>Waveform unavailable. The clip controls still work.</p>
+            <div class="clip-inputs"><label><span>START AT</span><div><input type="number" id="clip-start" min="0" step="0.1" value="0" aria-label="Clip start time in seconds"><span>sec</span></div></label><label><span>PLAY FOR</span><div><input type="number" id="clip-duration" min="0.1" step="0.1" value="12" aria-label="Clip duration in seconds"><span>sec</span></div></label></div>
+            <div class="player-actions"><button class="button primary play-button" id="play-button" disabled><svg class="icon"><use href="#i-play"/></svg><span id="play-button-label">Play clip</span></button><button class="stop-button" id="stop-button" aria-label="Stop playback" disabled><svg class="icon"><use href="#i-stop"/></svg></button></div>
+            <div class="playing-status" id="playing-status" aria-live="polite"><span class="ready-dot"></span>Ready when you are<span id="playback-time"></span></div>
+            <div class="player-divider"></div><label class="output-control"><span><svg class="icon small" id="output-icon"><use href="#i-laptop"/></svg><span>Play through</span></span><select id="output-select" aria-label="Playback output"><option value="browser">This browser</option><option value="server">Server speaker</option></select></label><div class="volume-control"><svg class="icon small"><use href="#i-speaker"/></svg><input type="range" id="volume" min="0" max="100" value="75" aria-label="Playback volume"><span id="volume-value">75%</span></div><p class="output-note" id="output-note">A quick preview, right where you are.</p>
+          </div>
+        </section>
+        <section class="card activity-card" id="activity"><div class="card-header"><h2>The latest</h2><span class="activity-live"><span></span>LIVE</span></div><div id="event-list" class="event-list"><p class="muted">Your activity will appear here.</p></div></section>
+      </div>
+    </div>
+    <footer class="page-footer"><span><span class="brand-mark mini"><span></span></span>Good to be home.</span><span id="footer-device">Threshold · local portal</span></footer>
+  </main>
+</div>
+<audio id="browser-audio" preload="metadata"></audio>
+<div class="toast-region" id="toasts" aria-live="polite"></div>
+
+<dialog id="settings-dialog" class="modal"><div class="modal-header"><span class="eyebrow">BEHIND THE SCENES</span><button class="icon-button" data-close-dialog aria-label="Close settings"><svg class="icon"><use href="#i-close"/></svg></button></div><h2>Your little control room.</h2><p class="modal-intro">One local server. Your files, your connection, your sound.</p><div class="settings-list" id="settings-list"></div><div class="modal-notice"><svg class="icon small"><use href="#i-info"/></svg><p>Speaker playback uses the server's default audio device. On a Raspberry Pi, connect a powered speaker and install <code>ffmpeg</code>.</p></div><button class="button secondary full-width" id="logout-button" hidden><svg class="icon small"><use href="#i-logout"/></svg>Lock this portal</button><button class="button dark full-width" data-close-dialog>Back to the good sounds</button></dialog>
+
+<dialog id="help-dialog" class="modal"><div class="modal-header"><span class="eyebrow">A QUICK HELLO</span><button class="icon-button" data-close-dialog aria-label="Close guide"><svg class="icon"><use href="#i-close"/></svg></button></div><h2>Home sounds good on you.</h2><p class="modal-intro">A few small steps, and you're ready.</p><ol class="setup-steps"><li><span>01</span><div><strong>Drop in a sound.</strong><p>Add an audio file, then choose where it starts and how long it plays.</p></div></li><li><span>02</span><div><strong>Give it a sound check.</strong><p>Choose “This browser” to preview, or “Server speaker” to play from your Pi.</p></div></li><li><span>03</span><div><strong>Connect Life360, locally.</strong><p>Start your downloaded server with a portal password, sign in, then paste your Life360 access token. It is tested before being saved.</p></div></li></ol><div class="code-block">PORTAL_PASSWORD='your-password' python3 app.py</div><p class="fine-print">This is a manual control portal. Automatic arrival detection, door sensors, and camera recording are not included yet. Keep the server on a trusted network; don't forward its port to the internet.</p><button class="button dark full-width" data-close-dialog>Got it. Let's make some sound.</button></dialog>
+
+<dialog id="confirm-dialog" class="modal small-modal"><div class="modal-header"><span class="eyebrow">JUST CHECKING</span><button class="icon-button" data-close-dialog aria-label="Cancel"><svg class="icon"><use href="#i-close"/></svg></button></div><h2 id="confirm-title">Remove this sound?</h2><p class="modal-intro" id="confirm-description">This removes the file from the server.</p><div class="confirm-actions"><button class="button secondary" id="confirm-cancel">Keep it</button><button class="button danger-button" id="confirm-action">Remove</button></div></dialog>
+</body>
+</html>
